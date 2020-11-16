@@ -1,0 +1,2 @@
+https://instaloader.github.io/as-module.html
+https://github.com/instaloader/instaloader/
