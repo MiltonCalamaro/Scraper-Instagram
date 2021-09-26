@@ -2,22 +2,21 @@
 """
 Autor : MiltonCalamaro
 """
+import argparse
 import datetime as dt
 from itertools import dropwhile, takewhile
 import instaloader
+import logging
 import pandas as pd
 import re
 import json
 import os
-import logging
-import argparse
+import time
 logging.basicConfig(level = logging.INFO)
 logger = logging.getLogger('__instagram__')
-global USERNAME, PASSWORD
-USERNAME = 'milton_calamaro'
-PASSWORD = 'Apa123Apa123.'
 def get_posts_hashtag(since, until, hashtag):
     L = instaloader.Instaloader( # Main Class info: https://instaloader.github.io/as-module.html#instaloader-main-class
+        dirname_pattern=f'../results/#{hashtag}',
         download_pictures=False,
         download_videos=False, 
         download_video_thumbnails=False,
@@ -30,13 +29,18 @@ def get_posts_hashtag(since, until, hashtag):
         filename_pattern = '{mediaid}'
     )
     L.login(USERNAME, PASSWORD)
-    # posts = L.get_hashtag_posts(hashtag) # instaloader.Hashtag.get_posts().
-    posts = instaloader.Hashtag.from_name(L.context, hashtag).get_posts()
+    posts = instaloader.NodeIterator(
+        L.context, "9b498c08113f1e09617a1703c22b2f32",
+        lambda d: d['data']['hashtag']['edge_hashtag_to_media'],
+        lambda n: instaloader.Post(L.context, n),
+        {'tag_name': hashtag},
+        f"https://www.instagram.com/explore/tags/{hashtag}/"
+    )
     print("capturing posts from: "+str(since)+" to: "+str(until))
-    SINCE = dt.datetime.strptime(until, "%Y-%m-%d %H:%M:%S") + dt.timedelta(hours=+5)
-    UNTIL = dt.datetime.strptime(since, "%Y-%m-%d %H:%M:%S") + dt.timedelta(hours=+5)
+    since = dt.datetime.strptime(since, "%Y-%m-%d %H:%M:%S")
+    until = dt.datetime.strptime(until, "%Y-%m-%d %H:%M:%S")
     list_post = []
-    for post in takewhile(lambda p: p.date >= UNTIL, dropwhile(lambda p: p.date >= SINCE, posts)):
+    for post in posts:#takewhile(lambda p: p.date >= UNTIL, dropwhile(lambda p: p.date >= SINCE, posts)):
         dict_post = {}
         dict_post['post_id'] = post.mediaid
         dict_post['date'] = post.date_local
@@ -57,13 +61,17 @@ def get_posts_hashtag(since, until, hashtag):
         dict_post['video_duration'] = post.video_duration
         dict_post['video_url'] = post.video_url
         dict_post['video_view'] = post.video_view_count
+        if since>post.date_local:
+            break
         list_post.append(dict_post)
         logger.info(' {} | {} | {}'.format(post.date_local, post.mediaid, post.caption.replace('\n', ' ')))
-        L.download_post(post, target=f'#{hashtag}')
+        L.download_post(post, target='')
+        
     return pd.DataFrame(list_post)
 
 def get_posts_profile(since, until, username):
     L = instaloader.Instaloader( # Main Class info: https://instaloader.github.io/as-module.html#instaloader-main-class
+        dirname_pattern=f'../results/{username}',
         download_pictures=False,
         download_videos=False, 
         download_video_thumbnails=False,
@@ -101,7 +109,7 @@ def get_posts_profile(since, until, username):
         dict_post['video_view'] = post.video_view_count
         list_post.append(dict_post)
         logger.info(' {} | {} | {}'.format(post.date_local, post.mediaid, post.caption.replace('\n', ' ')))
-        L.download_post(post, target=f'{username}')
+        L.download_post(post, target='')
     return pd.DataFrame(list_post)  
 
 def get_fields_comment(comment, parent_id, root_id):
@@ -148,11 +156,10 @@ def get_user_info(username):
     )
     # L.login(USERNAME, PASSWORD)
     dict_user_info = {}
-    try: 
-        profile = instaloader.Profile.from_username(L.context, username)
-    except:
-        L.login(USERNAME, PASSWORD)  
-        profile = instaloader.Profile.from_username(L.context, username)     
+    if not username:
+        logger.warning(f'error with username {username}')
+        return None
+    profile = instaloader.Profile.from_username(L.context, username)
     dict_user_info['user_id'] = profile.userid
     dict_user_info['user_name'] = profile.username
     dict_user_info['user_fullname'] = profile.full_name
@@ -174,65 +181,92 @@ def get_user_info(username):
     logger.info(f' {profile.userid} | {profile.username} | {profile.full_name}')
     return dict_user_info
 
+def get_df_user_info(tag_name):
+    filenames = [i for i in os.listdir('../results/') if tag_name in i]
+    if not filenames:
+        return pd.DataFrame()
+    usernames= []
+    for f in filenames:
+        df = pd.read_csv(f'../results/{f}', sep = '|', encoding='utf 8')
+        usernames.extend(df['user_name'].tolist())
+    usernames = set(usernames)
+    list_user_info = []
+    for username in usernames:
+        user_info = get_user_info(username)
+        if user_info:
+            list_user_info.append(user_info)
+    df_user_info = pd.DataFrame(list_user_info)
+    return df_user_info
+
 def main(hashtag, profile, since, until, download_user):
     ### extraer post del hashtags
     # df_posts_hashtag = pd.DataFrame()
     if hashtag:
         logger.info(f'STARTING SCRAPPER POST WITH HASHTAG: {hashtag}')
         df_posts_hashtag = get_posts_hashtag(since, until, hashtag)
-        df_posts_hashtag.to_csv(f'../results/df_posts_{hashtag}.csv', sep = '|', index = False, encoding='utf 8')
+        df_posts_hashtag.to_csv(f'../results/df_posts_hashtag_{hashtag}.csv', sep = '|', index = False, encoding='utf 8')
  
         logger.info("NOW, SCRAPPER COMMENTS OF THE POSTS")
         list_comment = []
-        for filename in os.listdir(f'#{hashtag}'):
-            list_comment.extend(get_list_comments(f'#{hashtag}/{filename}'))
+        for filename in os.listdir(f'../results/#{hashtag}'):
+            list_comment.extend(get_list_comments(f'../results/#{hashtag}/{filename}'))
         df_comments_hashtag = pd.DataFrame(list_comment)
-        df_comments_hashtag.to_csv(f'../results/df_comments_{hashtag}.csv', sep = '|', index = False, encoding='utf 8')
+        df_comments_hashtag.to_csv(f'../results/df_comments_hashtag_{hashtag}.csv', sep = '|', index = False, encoding='utf 8')
     
     ### extraer post del perfil de usuario
-    # df_posts_profile = pd.DataFrame()
     if profile:
         logger.info(f'STARTING SCRAPPER POST OF THE PROFILE: {profile}')
         df_posts_profile = get_posts_profile(since, until, profile)
-        df_posts_profile.to_csv(f'../results/df_posts_{profile}.csv', sep = '|', index = False, encoding='utf 8')       
+        df_posts_profile.to_csv(f'../results/df_posts_profile_{profile}.csv', sep = '|', index = False, encoding='utf 8')       
         
         logger.info("NOW, SCRAPPER COMMENTS OF THE POSTS")
         list_comment = []
-        for filename in os.listdir(f'{profile}'):
-            list_comment.extend(get_list_comments(f'{profile}/{filename}'))
+        for filename in os.listdir(f'../results/{profile}'):
+            list_comment.extend(get_list_comments(f'../results/{profile}/{filename}'))
         df_comments_profile = pd.DataFrame(list_comment)
-        df_comments_profile.to_csv(f'../results/df_comments_{profile}.csv', sep = '|', index = False, encoding='utf 8')
+        df_comments_profile.to_csv(f'../results/df_comments_profile_{profile}.csv', sep = '|', index = False, encoding='utf 8')
 
     if download_user:
-        ### extraer user_info de los tweets
-        # usernames = pd.concat([df_posts_profile, df_posts_hashtag], axis=0, ignore_index = True) 
-        df_posts_hashtag = pd.read_csv(f'../results/df_post_bancocentral.csv', sep = '|', encoding='utf 8')
-        logger.info("LAST, EXTRACTION USER INFO")
-        list_user_info = []
-        for username in set(df_posts_hashtag['user_name']):
-            list_user_info.append(get_user_info(username))
-        df_user_info = pd.DataFrame(list_user_info)
-        df_user_info.to_csv('../results/df_user_info.csv', sep = '|', index = False, encoding='utf 8')
+        logger.info("EXTRACTION USER INFO PROFILE")
+        df_user_info = get_df_user_info('profile')
+        if not df_user_info.empty:
+            logger.info('SAVE FILE USER INFO PROFILE')
+            df_user_info.to_csv('../results/df_userinfo_profile.csv', sep = '|', index = False, encoding='utf 8')
+        logger.info("EXTRACTION USER INFO HASHTAG")        
+        df_user_info = get_df_user_info('hashtag')
+        if not df_user_info.empty:
+            logger.info('SAVE FILE USER INFO HASHTAG')
+            df_user_info.to_csv('../results/df_userinfo_hashtag.csv', sep = '|', index = False, encoding='utf 8')
 
 if __name__=='__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('-hashtag',
+    now = time.strftime('%Y-%m-%d %H:%M:%S')
+    parser.add_argument('--hashtag','-ht',
                         dest = 'hashtag',
                         help = 'write a hashtags whithout #')
-    parser.add_argument('-profile',
+    parser.add_argument('--profile', '-pr',
                         dest = 'profile',
-                        help = 'write a hashtags whithout #')    
-    parser.add_argument('-since',
+                        help = 'write a prrofile of user')    
+    parser.add_argument('--since', '-s',
                         dest = 'since',
                         help = 'define the start_date to scraper %Y-%m-%d %H:%M:%S',
                         type = str)
-    parser.add_argument('-until',
+    parser.add_argument('--until', '-u',
                         dest = 'until',
                         help = 'define the last_date to scraper %Y-%m-%d %H:%M:%S',
-                        type = str)
-    parser.add_argument('--download_user',
+                        type = str,
+                        default = now)
+    parser.add_argument('--user',
                         dest = 'download_user',
                         help = 'set to download information of the user',
-                        action = 'store_true')    
+                        action = 'store_true')  
+    parser.add_argument('--usuario',
+                        dest = 'usuario',
+                        help = 'write your user in instagram')
+    parser.add_argument('--password', 
+                        dest = 'password',
+                        help = 'write your password in instagram')
     args = parser.parse_args()
+    USERNAME = args.usuario
+    PASSWORD = args.password
     main(args.hashtag, args.profile, args.since, args.until, args.download_user)
