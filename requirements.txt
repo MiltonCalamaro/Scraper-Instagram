@@ -1,2 +1,2 @@
-instaloader==4.5.3
+instaloader==4.8.1
 pandas==1.0.5
